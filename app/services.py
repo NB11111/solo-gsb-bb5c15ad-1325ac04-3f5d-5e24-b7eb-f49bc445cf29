@@ -23,6 +23,7 @@ from .engine import (
     to_number,
     union,
 )
+from .pairing import FaultAnchor, pair_faults
 
 DEFAULT_DEVICE_FIELD = "device"
 DEFAULT_METRIC_FIELD = "metric"
@@ -790,6 +791,77 @@ def query_fault_daily_ledger(
             "coverage": (total_fault_seconds / total_queried_seconds) if total_queried_seconds else 0.0,
         },
     }
+
+
+def query_fault_pairing(
+    antecedent_rule_id: int,
+    subsequent_rule_id: int,
+    start: float,
+    end: float,
+    max_lag_seconds: float,
+) -> dict:
+    """Read-only cause→effect pairing of two rules' stored fault intervals.
+
+    Only the *already stored* confirmed fault intervals whose **start falls
+    inside** the half-open query window ``[start, end)`` participate — the
+    query never re-evaluates rules and never writes fault rows.  Anchored on
+    interval starts, a subsequent fault may pair with an antecedent fault
+    only when it starts strictly later and within ``max_lag_seconds``; each
+    interval joins at most one pair in a time-order-preserving matching that
+    first maximizes the pair count, then minimizes the total lag, with ties
+    settled stably by fault id (see :func:`app.pairing.pair_faults`).
+
+    Raises ``ValueError`` for identical rules, an empty/inverted window or a
+    non-positive lag, and ``KeyError`` for unknown rule ids.
+    """
+    antecedent_rule_id = int(antecedent_rule_id)
+    subsequent_rule_id = int(subsequent_rule_id)
+    if antecedent_rule_id == subsequent_rule_id:
+        raise ValueError("fault pairing requires two different rules")
+    start = float(start)
+    end = float(end)
+    if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+        raise ValueError("pairing end must be greater than start (half-open [start, end))")
+    max_lag = float(max_lag_seconds)
+    if not math.isfinite(max_lag) or max_lag <= 0:
+        raise ValueError("max_lag_seconds must be a positive finite number of seconds")
+
+    antecedent_rule = db.fetch_rule(antecedent_rule_id)
+    if antecedent_rule is None:
+        raise KeyError(f"rule {antecedent_rule_id} not found")
+    subsequent_rule = db.fetch_rule(subsequent_rule_id)
+    if subsequent_rule is None:
+        raise KeyError(f"rule {subsequent_rule_id} not found")
+
+    # Stored faults only, filtered by start-in-window (not window overlap).
+    faults = query_faults(None, None)
+    antecedent = [
+        FaultAnchor(id=f["id"], start=f["start"], end=f["end"])
+        for f in faults
+        if f["rule_id"] == antecedent_rule_id and start <= f["start"] < end
+    ]
+    subsequent = [
+        FaultAnchor(id=f["id"], start=f["start"], end=f["end"])
+        for f in faults
+        if f["rule_id"] == subsequent_rule_id and start <= f["start"] < end
+    ]
+
+    payload = pair_faults(antecedent, subsequent, max_lag).to_dict()
+    payload["start"] = start
+    payload["end"] = end
+    payload["antecedent_rule"] = {
+        "id": antecedent_rule["id"],
+        "name": antecedent_rule["name"],
+        "logic": antecedent_rule["logic"],
+        "duration": antecedent_rule["duration"],
+    }
+    payload["subsequent_rule"] = {
+        "id": subsequent_rule["id"],
+        "name": subsequent_rule["name"],
+        "logic": subsequent_rule["logic"],
+        "duration": subsequent_rule["duration"],
+    }
+    return payload
 
 
 def query_sampling_audit(

@@ -451,6 +451,50 @@ def get_fault_daily_ledger(
 
 
 # --------------------------------------------------------------------------- #
+# Rule fault sequence pairing (read-only)
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/api/fault-pairing")
+def get_fault_pairing(
+    antecedent_rule: int = Query(...),
+    subsequent_rule: int = Query(...),
+    start: str = Query(...),
+    end: str = Query(...),
+    max_lag_seconds: float = Query(..., gt=0),
+) -> dict:
+    """Read-only cause→effect pairing of two different rules' stored faults.
+
+    Only stored fault intervals whose start falls inside the half-open UTC
+    window ``[start, end)`` participate.  Anchored on interval starts, a
+    subsequent fault pairs with an antecedent fault only when it starts
+    strictly later and within ``max_lag_seconds``; each interval joins at
+    most one pair in a time-order-preserving matching that first maximizes
+    the pair count, then minimizes the total lag, breaking ties stably by
+    fault id.  The response lists the pairs (fault ids, starts, lag), both
+    sides' unmatched intervals and the pairing rates.  The query never
+    re-evaluates rules and never writes fault results.
+    """
+    start_ts = parse_bound(start)
+    end_ts = parse_bound(end)
+    if start_ts is None or end_ts is None:
+        raise HTTPException(status_code=400, detail="start and end are required")
+    if not math.isfinite(max_lag_seconds) or max_lag_seconds <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="max_lag_seconds must be a positive finite number of seconds",
+        )
+    try:
+        return services.query_fault_pairing(
+            antecedent_rule, subsequent_rule, start_ts, end_ts, max_lag_seconds
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'")) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# --------------------------------------------------------------------------- #
 # Sampling-cadence audit (read-only)
 # --------------------------------------------------------------------------- #
 

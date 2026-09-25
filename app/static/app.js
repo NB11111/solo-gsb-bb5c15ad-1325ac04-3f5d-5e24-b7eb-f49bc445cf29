@@ -38,6 +38,9 @@ const state = {
   consDeviceB: "",
   consMetricB: "",
   consResult: null,
+  pairCauseId: null,
+  pairEffectId: null,
+  pairResult: null,
   imports: [],
 };
 
@@ -1568,6 +1571,115 @@ function renderConsistency() {
   wrap.hidden = false;
 }
 
+/* --------------------- rule fault sequence pairing --------------------- */
+
+function renderPairRules() {
+  const ids = state.rules.map((r) => r.id);
+  // keep selections only while the rules still exist and stay different;
+  // default cause to the first rule and effect to the first different rule
+  if (!ids.includes(state.pairCauseId)) state.pairCauseId = ids.length ? ids[0] : null;
+  if (!ids.includes(state.pairEffectId) || state.pairEffectId === state.pairCauseId) {
+    state.pairEffectId = ids.find((id) => id !== state.pairCauseId) ?? null;
+  }
+  const options = (selected) => state.rules.map((r) =>
+    `<option value="${r.id}"${r.id === selected ? " selected" : ""}>${esc(r.name)}</option>`).join("");
+  $("pair-rule-cause").innerHTML = options(state.pairCauseId);
+  $("pair-rule-effect").innerHTML = options(state.pairEffectId);
+}
+
+function fillPairRange() {
+  ensureView();
+  if (typeof state.viewStart === "number" && isFinite(state.viewStart)) {
+    $("pair-start").value = toLocalInput(state.viewStart);
+  }
+  if (typeof state.viewEnd === "number" && isFinite(state.viewEnd)) {
+    $("pair-end").value = toLocalInput(state.viewEnd);
+  }
+}
+
+async function runFaultPairing() {
+  const causeId = Number($("pair-rule-cause").value);
+  const effectId = Number($("pair-rule-effect").value);
+  const s = fromLocalInput($("pair-start").value);
+  const e = fromLocalInput($("pair-end").value);
+  const maxLag = Number($("pair-max-lag").value);
+  if (!causeId || !effectId) { toast("请先创建并评估至少两条规则", true); return; }
+  if (causeId === effectId) { toast("前因与后续必须是两条不同的规则", true); return; }
+  if (s === null || e === null || e <= s) { toast("请填写有效的起始/结束 UTC 时间（半开区间，结束须晚于起始）", true); return; }
+  if (!Number.isFinite(maxLag) || maxLag <= 0) { toast("最大滞后必须为正秒数", true); return; }
+  const params = new URLSearchParams({
+    cause_rule: causeId, effect_rule: effectId,
+    start: s, end: e, max_lag_seconds: maxLag,
+  });
+  const btn = $("btn-pair-query");
+  btn.disabled = true;
+  try {
+    state.pairResult = await api(`/api/fault-pairing?${params}`);
+    renderPairing();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function pairUnmatchedRows(list) {
+  if (!list.length) {
+    return `<tr><td colspan="3" class="empty">无未配对段：范围内该侧故障全部配对。</td></tr>`;
+  }
+  return list.map((f) => `
+    <tr>
+      <td>#${f.fault_id}</td>
+      <td>${fmtTime(f.start)}</td>
+      <td>[${fmtClock(f.start)}, ${fmtClock(f.end)}) · ${fmtDur(f.end - f.start)}</td>
+    </tr>`).join("");
+}
+
+function renderPairing() {
+  const r = state.pairResult;
+  const summary = $("pair-summary");
+  const wrap = $("pair-table-wrap");
+  const unmatchedWrap = $("pair-unmatched-wrap");
+  if (!r) {
+    summary.hidden = true;
+    wrap.hidden = true;
+    unmatchedWrap.hidden = true;
+    return;
+  }
+  summary.hidden = false;
+  summary.innerHTML = `
+    <div class="ledger-line"><b>前因规则：</b><span class="tag">${esc(r.cause_rule.name)}</span>
+      <b>后续规则：</b><span class="tag">${esc(r.effect_rule.name)}</span></div>
+    <div class="ledger-line"><b>查询范围：</b>${fmtTime(r.start)} → ${fmtTime(r.end)}
+      （半开 · ${fmtDur(r.end - r.start)}）· 最大滞后 ${Number(r.max_lag_seconds)} 秒
+      · 只取起点落在范围内的已保存故障</div>
+    <div class="ledger-line"><b>范围内故障：</b>前因 ${r.cause_faults_in_range} 段 · 后续 ${r.effect_faults_in_range} 段
+      · <b>配对 ${r.pair_count} 对</b>（总滞后 ${Math.round(r.total_lag_seconds)} 秒）
+      · 前因配对率 ${fmtPct(r.cause_pair_rate)} · 后续配对率 ${fmtPct(r.effect_pair_rate)}</div>`;
+
+  const rows = $("pair-rows");
+  if (r.pairs.length) {
+    rows.innerHTML = r.pairs.map((p, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>#${p.cause_fault_id}</td>
+        <td>${fmtTime(p.cause_start)}</td>
+        <td>#${p.effect_fault_id}</td>
+        <td>${fmtTime(p.effect_start)}</td>
+        <td><b>${Math.round(p.lag_seconds)}</b></td>
+      </tr>`).join("");
+  } else {
+    rows.innerHTML = `<tr><td colspan="6" class="empty">无可配对故障：范围内没有满足「后续起点晚于前因起点且不超过最大滞后」的组合。</td></tr>`;
+  }
+  wrap.hidden = false;
+
+  $("pair-unmatched-cause-count").textContent = `${r.unmatched_cause.length}`;
+  $("pair-unmatched-effect-count").textContent = `${r.unmatched_effect.length}`;
+  $("pair-unmatched-cause-rows").innerHTML = pairUnmatchedRows(r.unmatched_cause);
+  $("pair-unmatched-effect-rows").innerHTML = pairUnmatchedRows(r.unmatched_effect);
+  unmatchedWrap.hidden = false;
+}
+
 /* ----------------------------- annotations ----------------------------- */
 
 function renderAnnotations() {
@@ -1746,11 +1858,14 @@ async function reloadAll() {
   renderLedgerRules();
   renderAuditChannels();
   renderConsChannels();
+  renderPairRules();
   if (!$("ledger-start").value || !$("ledger-end").value) fillLedgerRange();
   if (!$("audit-start").value || !$("audit-end").value) fillAuditRange();
   if (!$("cons-start").value || !$("cons-end").value) fillConsRange();
+  if (!$("pair-start").value || !$("pair-end").value) fillPairRange();
   if (state.auditResult) renderSamplingAudit();
   if (state.consResult) renderConsistency();
+  if (state.pairResult) renderPairing();
   syncFilterInputs();
   state.eventOffset = 0;
   await loadEvents(false);
@@ -1766,6 +1881,7 @@ async function refreshAfterRuleChange() {
   renderTimeline();
   renderFaultEvents();
   renderLedgerRules();
+  renderPairRules();
 }
 
 function updateStatus() {
@@ -1965,6 +2081,23 @@ function bind() {
   });
   $("btn-cons-query").addEventListener("click", runConsistencyCheck);
   $("btn-cons-fill").addEventListener("click", fillConsRange);
+
+  $("pair-rule-cause").addEventListener("change", () => {
+    state.pairCauseId = Number($("pair-rule-cause").value) || null;
+    if (state.pairCauseId !== null && state.pairCauseId === state.pairEffectId) {
+      state.pairEffectId = state.rules.map((r) => r.id).find((id) => id !== state.pairCauseId) ?? null;
+    }
+    renderPairRules();
+  });
+  $("pair-rule-effect").addEventListener("change", () => {
+    state.pairEffectId = Number($("pair-rule-effect").value) || null;
+    if (state.pairEffectId !== null && state.pairEffectId === state.pairCauseId) {
+      state.pairCauseId = state.rules.map((r) => r.id).find((id) => id !== state.pairEffectId) ?? null;
+    }
+    renderPairRules();
+  });
+  $("btn-pair-query").addEventListener("click", runFaultPairing);
+  $("btn-pair-fill").addEventListener("click", fillPairRange);
 
   $("brush-save").addEventListener("click", saveBrush);
   $("brush-cancel").addEventListener("click", () => { $("brush-pop").hidden = true; state.brush = null; });

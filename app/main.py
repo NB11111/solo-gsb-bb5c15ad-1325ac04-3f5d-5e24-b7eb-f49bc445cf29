@@ -537,6 +537,47 @@ def get_consistency_check(
 
 
 # --------------------------------------------------------------------------- #
+# Rule fault sequence pairing (read-only)
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/api/fault-pairing")
+def get_fault_pairing(
+    cause_rule: int = Query(...),
+    effect_rule: int = Query(...),
+    start: str = Query(...),
+    end: str = Query(...),
+    max_lag_seconds: float = Query(..., gt=0),
+) -> dict:
+    """Read-only sequence pairing of two different rules' stored faults.
+
+    Only stored confirmed faults whose **start** lies inside the half-open
+    UTC window ``[start, end)`` take part.  A cause fault pairs with an
+    effect fault whose start is strictly later by at most
+    ``max_lag_seconds`` (positive); every fault joins at most one pair.  The
+    order-preserving one-to-one pairing first maximizes the pair count, then
+    minimizes the total lag, breaking remaining ties stably by fault id.
+    The response lists the pairs (fault ids, starts, lag), the unmatched
+    faults on both sides and the pairing rates.  The query never recomputes
+    or writes fault results.
+    """
+    start_ts = parse_bound(start)
+    end_ts = parse_bound(end)
+    if start_ts is None or end_ts is None:
+        raise HTTPException(status_code=400, detail="start and end are required")
+    if not math.isfinite(max_lag_seconds) or max_lag_seconds <= 0:
+        raise HTTPException(status_code=400, detail="max_lag_seconds must be a positive finite number of seconds")
+    try:
+        return services.query_fault_pairing(
+            cause_rule, effect_rule, start_ts, end_ts, max_lag_seconds
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'")) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# --------------------------------------------------------------------------- #
 # Annotations
 # --------------------------------------------------------------------------- #
 

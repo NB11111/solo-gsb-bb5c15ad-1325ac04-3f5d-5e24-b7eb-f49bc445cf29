@@ -10,6 +10,7 @@ from collections import defaultdict
 from . import db
 from .audit import audit_cadence
 from .consistency import check_consistency
+from .pairing import PairableFault, pair_faults
 from .engine import (
     Condition,
     Event,
@@ -968,6 +969,84 @@ def query_channel_consistency(
         "min_ts": info_b["min_ts"],
         "max_ts": info_b["max_ts"],
     }
+    return payload
+
+
+def query_fault_pairing(
+    cause_rule_id: int,
+    effect_rule_id: int,
+    start: float,
+    end: float,
+    max_lag_seconds: float,
+) -> dict:
+    """Read-only sequence pairing of two different rules' stored faults.
+
+    Only the **already stored** confirmed fault intervals whose **start**
+    lies inside the half-open UTC window ``[start, end)`` take part; each
+    cause fault may be paired with an effect fault whose start is strictly
+    later by at most ``max_lag_seconds``.  The pairing is order-preserving
+    and one-to-one, first maximizing the pair count and then minimizing the
+    total lag, with ties resolved stably by fault id (see
+    :func:`app.pairing.pair_faults`).  The query only ``SELECT``\ s stored
+    rows: it never re-evaluates rules and never writes fault results.
+
+    Raises ``KeyError`` for unknown rule ids and ``ValueError`` for identical
+    rules, an empty/inverted window or a non-positive lag.
+    """
+    cause_rule_id = int(cause_rule_id)
+    effect_rule_id = int(effect_rule_id)
+    if cause_rule_id == effect_rule_id:
+        raise ValueError("cause and effect must be two different rules")
+    start = float(start)
+    end = float(end)
+    if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+        raise ValueError("pairing end must be greater than start (half-open [start, end))")
+    max_lag = float(max_lag_seconds)
+    if not math.isfinite(max_lag) or max_lag <= 0:
+        raise ValueError("max_lag_seconds must be a positive finite number of seconds")
+
+    cause_rule = db.fetch_rule(cause_rule_id)
+    if cause_rule is None:
+        raise KeyError(f"rule not found: {cause_rule_id}")
+    effect_rule = db.fetch_rule(effect_rule_id)
+    if effect_rule is None:
+        raise KeyError(f"rule not found: {effect_rule_id}")
+
+    # Stored faults whose START instant falls inside [start, end) — faults
+    # starting before the window never anchor a pair, however far they reach.
+    rows = db.query(
+        "SELECT id, rule_id, start_ts, end_ts FROM fault_intervals"
+        " WHERE rule_id IN (?, ?) AND start_ts >= ? AND start_ts < ?"
+        " ORDER BY start_ts, id",
+        (cause_rule_id, effect_rule_id, start, end),
+    )
+    causes = [
+        PairableFault(id=r["id"], start=r["start_ts"], end=r["end_ts"])
+        for r in rows
+        if r["rule_id"] == cause_rule_id
+    ]
+    effects = [
+        PairableFault(id=r["id"], start=r["start_ts"], end=r["end_ts"])
+        for r in rows
+        if r["rule_id"] == effect_rule_id
+    ]
+
+    result = pair_faults(causes, effects, max_lag)
+    payload = result.to_dict()
+    payload["cause_rule"] = {
+        "id": cause_rule["id"],
+        "name": cause_rule["name"],
+        "logic": cause_rule["logic"],
+        "duration": cause_rule["duration"],
+    }
+    payload["effect_rule"] = {
+        "id": effect_rule["id"],
+        "name": effect_rule["name"],
+        "logic": effect_rule["logic"],
+        "duration": effect_rule["duration"],
+    }
+    payload["start"] = start
+    payload["end"] = end
     return payload
 
 

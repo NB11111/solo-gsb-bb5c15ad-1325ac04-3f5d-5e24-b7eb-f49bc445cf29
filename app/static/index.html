@@ -373,6 +373,69 @@
       </section>
 
       <section class="card">
+        <div class="card-head">
+          <h2>规则故障先后配对</h2>
+          <span class="muted small">只读 · 读取已保存故障，不重算不写入</span>
+        </div>
+        <div class="muted small ledger-hint">
+          从现有规则选择<b>两条不同规则</b>作为前因与后续，输入 <b>UTC 半开时间范围</b> <code>[start, end)</code> 与
+          <b>正数最大滞后秒数</b>。只取<b>起点落在范围内</b>的已保存故障区间：以后续故障起点<b>晚于</b>前因起点且
+          不超过最大滞后进行配对；每段故障最多参与一对，在保持时间顺序的一对一配对中<b>先最大化配对数、再最小化总滞后</b>，
+          平局按故障 ID 稳定选择。下方列出配对（双方故障 ID、起点与滞后）、双方未配对段与各自配对率。
+        </div>
+        <div class="ledger-form">
+          <label class="ledger-field">前因规则
+            <select id="pair-rule-cause"></select>
+          </label>
+          <label class="ledger-field">后续规则
+            <select id="pair-rule-effect"></select>
+          </label>
+          <label class="ledger-field">起始（本机时区） <input type="datetime-local" id="pair-start" step="1" /></label>
+          <label class="ledger-field">结束（本机时区） <input type="datetime-local" id="pair-end" step="1" /></label>
+          <label class="ledger-field">最大滞后（秒，&gt; 0） <input id="pair-max-lag" type="number" min="0" step="any" value="600" /></label>
+          <button id="btn-pair-query" class="btn btn-small btn-primary">配对</button>
+          <button id="btn-pair-fill" class="btn btn-small">填入当前筛选范围</button>
+        </div>
+        <div class="muted small">时间在本机时区输入、按 UTC 查询；只读取已保存的故障区间，不触发重算、不写入任何结果。</div>
+        <div id="pair-summary" class="ledger-summary" hidden></div>
+        <div id="pair-table-wrap" class="ledger-table-wrap" hidden>
+          <table class="data-table ledger-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>前因故障 ID</th>
+                <th>前因起点（UTC）</th>
+                <th>后续故障 ID</th>
+                <th>后续起点（UTC）</th>
+                <th>滞后秒数</th>
+              </tr>
+            </thead>
+            <tbody id="pair-rows"></tbody>
+          </table>
+        </div>
+        <div id="pair-unmatched-wrap" class="pair-unmatched" hidden>
+          <div>
+            <div class="pair-unmatched-head">前因未配对段 <span id="pair-unmatched-cause-count" class="tab-count"></span></div>
+            <div class="ledger-table-wrap">
+              <table class="data-table ledger-table">
+                <thead><tr><th>故障 ID</th><th>起点（UTC）</th><th>区间</th></tr></thead>
+                <tbody id="pair-unmatched-cause-rows"></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <div class="pair-unmatched-head">后续未配对段 <span id="pair-unmatched-effect-count" class="tab-count"></span></div>
+            <div class="ledger-table-wrap">
+              <table class="data-table ledger-table">
+                <thead><tr><th>故障 ID</th><th>起点（UTC）</th><th>区间</th></tr></thead>
+                <tbody id="pair-unmatched-effect-rows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
         <div class="card-head"><h2>区间标注</h2><span id="anno-count" class="muted"></span></div>
         <div id="anno-list"></div>
       </section>
